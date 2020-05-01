@@ -1,45 +1,44 @@
 import subprocess
-import queue
-import threading
-from collections import namedtuple
+import logging
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import os
+import time
 
-num_worker_threads = 2
+# Configure to log to stdout
+logging.basicConfig(format='%(asctime)s\t%(threadName)s\t%(message)s',
+                    level=logging.INFO)
 
-def conv_audio(from_file, to_file):
-    r = subprocess.run(args=['ffmpeg.exe', '-y', '-i', from_file,
-                        '-vn', '-ar', '44100', '-ac', '2', '-b:a', '192k', to_file])
+def conv_audio(infile, outfile):
+    logging.info("  [......]: %s -> %s", infile, outfile)
+    r = subprocess.run(args=['ffmpeg.exe', '-hide_banner', '-y', '-i', infile,
+                        '-vn', '-ar', '44100', '-ac', '2', '-b:a', '192k', outfile],
+                        capture_output=True)
+    logging.info("  [%6s]: %s -> %s", 'done' if r.returncode== 0 else 'failed', infile, outfile)
 
-def worker():
-    while True:
-        item = q.get()
-        if item is None:
-            break
-        conv_audio(item.from_file, item.to_file)
-        q.task_done()
+def submit_work(executor, indir, outdir, outtype):
+    for dirpath, _, filenames in os.walk(indir):
+        for f in filenames:
+            executor.submit(conv_audio, os.path.join(dirpath, f), os.path.join(outdir, f'{os.path.splitext(f)[0]}.{outtype}'))
 
-def init_tasks():
-    global q, threads
-    q = queue.Queue()
-    threads = []
-    for i in range(num_worker_threads):
-        t = threading.Thread(target=worker)
-        t.start()
-        threads.append(t)
+def main(indir, outdir, outtype):
+    logging.info('[> %s]: %s -> %s', outtype, indir, outdir)
 
-def join():
-    # block until all tasks are done
-    q.join()
+    if not os.path.exists(outdir):
+        os.makedirs(outdir)
 
-    # stop workers
-    for i in range(num_worker_threads):
-        q.put(None)
-    for t in threads:
-        t.join()
+    start = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=os.cpu_count(), thread_name_prefix="Converter") as executor:
+        submit_work(executor, indir, outdir, outtype)
 
-WorkItem = namedtuple('WorkItem', 'from_file, to_file')
+    logging.info('[%.2fs]: %s -> %s', time.perf_counter()-start, indir, outdir)
+
 if __name__ == '__main__':
-    init_tasks()
-    q.put(WorkItem(r'C:\record\20180305234046.wav', r'C:\record\20180305234046.mp3'))
-    q.put(WorkItem(r'C:\record\20180306011655.wav', r'C:\record\20180306011655.mp3'))
-    20180306011655
-    join()
+    parser = argparse.ArgumentParser(description="Convert audio files to a specific audio format concurrently with multiple processes")
+    parser.add_argument('-i', '--indir', default=".", type=str, help="convert all media files under this directory")
+    parser.add_argument('-o', '--outdir', default=".", type=str, help="directory to save output audio files")
+    parser.add_argument('-t', '--type', default='mp3', type=str, help="output audio file type")
+    
+    args = parser.parse_args()
+
+    main(args.indir, args.outdir, args.type)
